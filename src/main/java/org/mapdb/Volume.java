@@ -1575,7 +1575,12 @@ public abstract class Volume implements Closeable{
 
         @Override
         public boolean isEmpty() {
-            return data.length==0;
+            //TODO better way to check if data were written here, perhaps eliminate this method completely
+            for(byte b:data){
+                if(b!=0)
+                    return false;
+            }
+            return true;
         }
 
         @Override

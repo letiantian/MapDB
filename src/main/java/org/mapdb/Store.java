@@ -25,6 +25,8 @@ public abstract class Store implements Engine {
 
     protected static final Logger LOG = Logger.getLogger(Store.class.getName());
 
+    //TODO if locks are disabled, use NoLock for structuralLock and commitLock
+
     /** protects structural layout of records. Memory allocator is single threaded under this lock */
     protected final ReentrantLock structuralLock = new ReentrantLock(CC.FAIR_LOCKS);
 
@@ -50,6 +52,10 @@ public abstract class Store implements Engine {
 
     protected final Cache[] caches;
 
+    public static final int LOCKING_STRATEGY_READWRITELOCK=0;
+    public static final int LOCKING_STRATEGY_WRITELOCK=1;
+    public static final int LOCKING_STRATEGY_NOLOCK=2;
+
     protected Store(
             String fileName,
             Fun.Function1<Volume, String> volumeFactory,
@@ -68,12 +74,14 @@ public abstract class Store implements Engine {
             throw new IllegalArgumentException();
         locks = new ReadWriteLock[lockScale];
         for(int i=0;i< locks.length;i++){
-            if(lockingStrategy==0)
+            if(lockingStrategy==LOCKING_STRATEGY_READWRITELOCK)
                 locks[i] = new ReentrantReadWriteLock(CC.FAIR_LOCKS);
-            else if(lockingStrategy==1){
+            else if(lockingStrategy==LOCKING_STRATEGY_WRITELOCK){
                 locks[i] = new ReadWriteSingleLock(new ReentrantLock(CC.FAIR_LOCKS));
-            }else{
+            }else if(lockingStrategy==LOCKING_STRATEGY_NOLOCK){
                 locks[i] = new ReadWriteSingleLock(new NoLock());
+            }else{
+                throw new IllegalArgumentException("Illegal locking strategy: "+lockingStrategy);
             }
         }
 

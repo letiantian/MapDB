@@ -2,13 +2,11 @@ package org.mapdb;
 
 
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Test;
 
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
@@ -142,7 +140,7 @@ public abstract class EngineTest<ENGINE extends Engine>{
 
 
     @Test public void compact_large_record(){
-        byte[] b = new byte[100000];
+        byte[] b = UtilsTest.randomByteArray(100000);
         long recid = e.put(b, Serializer.BYTE_ARRAY_NOSIZE);
         e.commit();
         e.compact();
@@ -266,7 +264,7 @@ public abstract class EngineTest<ENGINE extends Engine>{
         }
     }
 
-    @Test @Ignore //TODO reenable after compaction
+    @Test
     public void get_non_existent_after_delete_and_compact(){
         long recid = e.put(1L,Serializer.LONG);
         e.delete(recid,Serializer.LONG);
