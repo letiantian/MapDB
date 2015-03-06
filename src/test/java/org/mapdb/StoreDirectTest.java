@@ -269,7 +269,7 @@ public class StoreDirectTest <E extends StoreDirect> extends EngineTest<E>{
     @Test public void test_phys_record_reused_COMPACT(){
         final long recid = e.put(1L, Serializer.LONG);
         assertEquals((Long)1L, e.get(recid, Serializer.LONG));
-        final long physRecid = e.vol.getLong(recid*8+ StoreDirect.HEAD_END);
+
         e.delete(recid, Serializer.LONG);
         e.commit();
         e.compact();
@@ -281,7 +281,7 @@ public class StoreDirectTest <E extends StoreDirect> extends EngineTest<E>{
 
         long indexVal = e.vol.getLong(recid*8+ StoreDirect.HEAD_END);
         assertEquals(8L, indexVal>>>48); // size
-        assertEquals((physRecid&MOFFSET)+StoreDirect.CHUNKSIZE
+        assertEquals(e.PAGE_SIZE+
                 + (e instanceof StoreWAL?16:0), //TODO investigate why space allocation in WAL works differently
                 indexVal&MOFFSET); //offset
         assertEquals(0, indexVal & StoreDirect.MLINKED);

@@ -19,16 +19,14 @@ public class StoreCachedTest<E extends StoreCached> extends StoreDirectTest<E>{
         StoreCached e =new StoreCached(f.getPath());
         e.init();
         return (E)e;
-
     }
-
 
     @Test public void put_delete(){
         long recid = e.put(1L, Serializer.LONG);
         int pos = e.lockPos(recid);
         assertEquals(1, e.writeCache[pos].size);
         e.delete(recid,Serializer.LONG);
-        assertEquals(0,e.writeCache[pos].size);
+        assertEquals(1,e.writeCache[pos].size);
     }
 
     @Test public void put_update_delete(){
@@ -36,9 +34,9 @@ public class StoreCachedTest<E extends StoreCached> extends StoreDirectTest<E>{
         int pos = e.lockPos(recid);
         assertEquals(1, e.writeCache[pos].size);
         e.update(2L, recid,Serializer.LONG);
-        assertEquals(0,e.writeCache[pos].size);
+        assertEquals(1,e.writeCache[pos].size);
         e.delete(recid,Serializer.LONG);
-        assertEquals(0,e.writeCache[pos].size);
+        assertEquals(1,e.writeCache[pos].size);
     }
 
 }

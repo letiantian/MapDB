@@ -372,11 +372,13 @@ public class StoreDirect extends Store {
             assertWriteLocked(lockPos(recid));
 
         long[] offsets = offsetsGet(recid);
-        structuralLock.lock();
-        try {
-            freeDataPut(offsets);
-        }finally {
-            structuralLock.unlock();
+        if(offsets!=null) {
+            structuralLock.lock();
+            try {
+                freeDataPut(offsets);
+            } finally {
+                structuralLock.unlock();
+            }
         }
         indexValPut(recid,0,0,true,true);
     }
@@ -880,6 +882,8 @@ public class StoreDirect extends Store {
                 //update some stuff
                 target.vol.putLong(MAX_RECID_OFFSET, parity3Set(maxRecid * 8));
                 this.indexPages = target.indexPages;
+                this.lastAllocatedData = target.lastAllocatedData;
+
 
                 //compaction done, swap target with current
                 if(compactedFile==null) {
