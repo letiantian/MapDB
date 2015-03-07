@@ -792,13 +792,20 @@ public class StoreDirect extends Store {
 
     @Override
     public void compact() {
+        final boolean isCached = this instanceof StoreCached;
         for(int i=0;i<locks.length;i++){
-            locks[i].writeLock().lock();
+            Lock lock = isCached?locks[i].readLock():locks[i].writeLock();
+            lock.lock();
         }
 
         try{
             commitLock.lock();
             try {
+
+                //clear caches, so freed recids throw an exception, instead of returning null
+                for(Cache c:caches)
+                    c.clear();
+
 
                 long maxRecidOffset = parity3Get(headVol.getLong(MAX_RECID_OFFSET));
 
@@ -810,6 +817,10 @@ public class StoreDirect extends Store {
                         checksum,compress,null,false,0,false,0);
                 target.init();
                 long maxRecid = RECID_LAST_RESERVED;
+
+                //TODO what about recids which are already in freeRecidLongStack?
+                // I think it gets restored by traversing index table,
+                // so there is no need to traverse and copy freeRecidLongStack
 
                 //iterate over index pages
                 indexPage:
@@ -917,16 +928,28 @@ public class StoreDirect extends Store {
                     //and reopen volume
                     this.headVol = this.vol = volumeFactory.run(this.fileName);
 
+                    if(isCached){
+                        structuralLock.lock();
+                        try {
+                            ((StoreCached)this).dirtyStackPages.clear();
+                        }finally {
+                            structuralLock.unlock();
+                        }
+
+                    }
+
                 }
             }finally{
                 commitLock.unlock();
             }
         }finally {
-            for(int i=locks.length-1;i>=0;i--){
-                locks[i].writeLock().unlock();
+            for(int i=locks.length-1;i>=0;i--) {
+                Lock lock = isCached ? locks[i].readLock() : locks[i].writeLock();
+                lock.unlock();
             }
         }
     }
+
 
     private void updateFromCompact(long recid, long indexVal, Volume oldVol) {
         //allocate new space

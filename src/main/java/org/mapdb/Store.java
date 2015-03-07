@@ -1148,7 +1148,7 @@ public abstract class Store implements Engine {
      * most of the methods. Only put/get/remove operations are supported.
      * <p/>
      * To iterate over collection one has to traverse {@code set} which contains
-     * keys, va7lues are in separate field.
+     * keys, values are in separate field.
      *
      * @author originaly part of Koloboke library, Roman Leventov, Higher Frequency Trading
      * @author heavily modified for MapDB

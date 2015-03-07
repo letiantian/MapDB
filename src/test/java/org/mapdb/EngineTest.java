@@ -521,4 +521,20 @@ public abstract class EngineTest<ENGINE extends Engine>{
 
     }
 
+    @Test public void compact_double_recid_reuse(){
+        long recid1 = e.put("aa",Serializer.STRING);
+        long recid2 = e.put("bb",Serializer.STRING);
+        e.compact();
+        e.delete(recid1,Serializer.STRING);
+        e.compact();
+        e.delete(recid2,Serializer.STRING);
+        e.compact();
+
+        assertEquals(recid2,e.preallocate());
+        assertEquals(recid1,e.preallocate());
+
+
+    }
+
+
 }
