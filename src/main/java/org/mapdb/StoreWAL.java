@@ -346,6 +346,9 @@ public class StoreWAL extends StoreCached {
     protected void indexValPut(long recid, int size, long offset, boolean linked, boolean unused) {
         if(CC.PARANOID)
             assertWriteLocked(lockPos(recid));
+        if(CC.PARANOID && compactionInProgress)
+            throw new AssertionError();
+
         long newVal = composeIndexVal(size, offset, linked, unused, true);
         currLongLongs[lockPos(recid)].put(recidToOffset(recid),newVal);
     }
@@ -354,17 +357,23 @@ public class StoreWAL extends StoreCached {
     protected void indexLongPut(long offset, long val) {
         if(CC.PARANOID && !structuralLock.isHeldByCurrentThread())
             throw  new AssertionError();
+        if(CC.PARANOID && compactionInProgress)
+            throw new AssertionError();
         walPutLong(offset,val);
     }
 
     @Override
     protected long pageAllocate() {
+        if(CC.PARANOID && compactionInProgress)
+            throw new AssertionError();
+
         long storeSize = parity16Get(headVol.getLong(STORE_SIZE));
         headVol.putLong(STORE_SIZE, parity16Set(storeSize + PAGE_SIZE));
         //TODO clear data on page? perhaps special instruction?
 
         if(CC.PARANOID && storeSize%PAGE_SIZE!=0)
             throw new AssertionError();
+
 
         return storeSize;
     }
@@ -373,6 +382,10 @@ public class StoreWAL extends StoreCached {
     protected byte[] loadLongStackPage(long pageOffset) {
         if (CC.PARANOID && !structuralLock.isHeldByCurrentThread())
             throw new AssertionError();
+
+        if(CC.PARANOID && compactionInProgress)
+            throw new AssertionError();
+
 
         //first try to get it from dirty pages in current TX
         byte[] page = dirtyStackPages.get(pageOffset);
@@ -856,8 +869,13 @@ public class StoreWAL extends StoreCached {
             commitLock.lock();
             try{
 
-            if(closed)
+            if(closed) {
                 return;
+            }
+
+            if(hasUncommitedData()){
+                LOG.warning("Closing storage with uncommited data, those data will be discarted.");
+            }
 
             closed = true;
 
@@ -962,26 +980,74 @@ public class StoreWAL extends StoreCached {
 
             commitLock.lock();
             try{
+                //swap index files
+
+                //lock everything, so no IO is running while volume is being swapped
+                for(int i=0;i<locks.length;i++){
+                    locks[i].writeLock().lock();
+                }
+                try{
+
+                    //update some stuff
+                    target.vol.putLong(MAX_RECID_OFFSET, parity3Set(maxRecid.get() * 8));
+                    this.indexPages = target.indexPages;
+                    this.lastAllocatedData = target.lastAllocatedData;
 
 
-                //swap files
+                    //swap files
+                    if(targetFile==null) {
+                        //in memory vol without file, just swap everything
+                        Volume oldVol = this.vol;
+                        this.headVol = this.vol = target.vol;
+                        //TODO update variables
+                        oldVol.close();
+                    }else {
+                        File compactedFileF = new File(targetFile);
+                        //close everything
+                        target.vol.sync();
+                        target.close();
+                        this.vol.sync();
+                        this.vol.close();
+                        //rename current file
+                        File currFile = new File(this.fileName);
+                        File currFileRenamed = new File(currFile.getPath() + ".compact_orig");
+                        if (!currFile.renameTo(currFileRenamed)) {
+                            //failed to rename file, perhaps still open
+                            //TODO recovery here. Perhaps copy data from one file to other, instead of renaming it
+                            throw new AssertionError("failed to rename file " + currFile);
+                        }
 
-//                //update some stuff
-//                target.vol.putLong(MAX_RECID_OFFSET, parity3Set(maxRecid.get() * 8));
-//                this.indexPages = target.indexPages;
-//                this.lastAllocatedData = target.lastAllocatedData;
+                        //rename compacted file to current file
+                        if (!compactedFileF.renameTo(currFile)) {
+                            //TODO recovery here.
+                            throw new AssertionError("failed to rename file " + compactedFileF);
+                        }
+
+                        //and reopen volume
+                        this.headVol = this.vol = volumeFactory.run(this.fileName);
+
+                    }
+
+                    //TODO swap done, discard WAL0 file
+
+                }finally {
+                    for (int i = locks.length; i >= 0; i--) {
+                        locks[i].writeLock().unlock();
+                    }
+                }
 
 
+                //TODO convert record WAL into regular WALS
 
-                //replay record wals
+                //TODO full replay
 
-
-                compactionInProgress = false; //TODO in finally clause? but still under commitLock
+                compactionInProgress = false;
             }finally {
                 commitLock.unlock();
             }
 
         }finally {
+            compactionInProgress = false; //TODO this should be under commitLock, but still better than leaving it true
             compactLock.unlock();
         }
     }

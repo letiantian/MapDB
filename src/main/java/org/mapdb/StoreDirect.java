@@ -54,11 +54,12 @@ public class StoreDirect extends Store {
     private static final long[] EMPTY_LONGS = new long[0];
 
 
-    protected Volume vol;
-    protected Volume headVol;
+    //TODO this refs are swapped during compaction. Investigate performance implications
+    protected volatile Volume vol;
+    protected volatile Volume headVol;
 
     //TODO this only grows under structural lock, but reads are outside structural lock, does it have to be volatile?
-    protected long[] indexPages;
+    protected volatile long[] indexPages;
 
     protected volatile long lastAllocatedData=0; //TODO this is under structural lock, does it have to be volatile?
 
