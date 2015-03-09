@@ -279,10 +279,9 @@ public class StoreDirectTest <E extends StoreDirect> extends EngineTest<E>{
         assertEquals((Long)1L, e.get(recid2, Serializer.LONG));
         assertEquals(recid, recid2);
 
-        long indexVal = e.vol.getLong(recid*8+ StoreDirect.HEAD_END);
+        long indexVal = e.indexValGet(recid);
         assertEquals(8L, indexVal>>>48); // size
-        assertEquals(e.PAGE_SIZE+
-                + (e instanceof StoreWAL?16:0), //TODO investigate why space allocation in WAL works differently
+        assertEquals(e.PAGE_SIZE,
                 indexVal&MOFFSET); //offset
         assertEquals(0, indexVal & StoreDirect.MLINKED);
         assertEquals(0, indexVal & StoreDirect.MUNUSED);

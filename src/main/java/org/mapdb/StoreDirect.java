@@ -832,53 +832,53 @@ public class StoreDirect extends Store {
                 }
 
                 //update some stuff
-                target.vol.putLong(MAX_RECID_OFFSET, parity3Set(maxRecid.get() * 8));
-                this.indexPages = target.indexPages;
-                this.lastAllocatedData = target.lastAllocatedData;
+                structuralLock.lock();
+                try {
+
+                    target.vol.putLong(MAX_RECID_OFFSET, parity3Set(maxRecid.get() * 8));
+                    this.indexPages = target.indexPages;
+                    this.lastAllocatedData = target.lastAllocatedData;
 
 
-                //compaction done, swap target with current
-                if(compactedFile==null) {
-                    //in memory vol without file, just swap everything
-                    Volume oldVol = this.vol;
-                    this.headVol = this.vol = target.vol;
-                    //TODO update variables
-                    oldVol.close();
-                }else{
-                    File compactedFileF = new File(compactedFile);
-                    //close everything
-                    target.vol.sync();
-                    target.close();
-                    this.vol.sync();
-                    this.vol.close();
-                    //rename current file
-                    File currFile = new File(this.fileName);
-                    File currFileRenamed = new File(currFile.getPath()+".compact_orig");
-                    if(!currFile.renameTo(currFileRenamed)){
-                        //failed to rename file, perhaps still open
-                        //TODO recovery here. Perhaps copy data from one file to other, instead of renaming it
-                        throw new AssertionError("failed to rename file "+currFile);
-                    }
+                    //compaction done, swap target with current
+                    if(compactedFile==null) {
+                        //in memory vol without file, just swap everything
+                        Volume oldVol = this.vol;
+                        this.headVol = this.vol = target.vol;
+                        //TODO update variables
+                        oldVol.close();
+                    }else{
+                        File compactedFileF = new File(compactedFile);
+                        //close everything
+                        target.vol.sync();
+                        target.close();
+                        this.vol.sync();
+                        this.vol.close();
+                        //rename current file
+                        File currFile = new File(this.fileName);
+                        File currFileRenamed = new File(currFile.getPath()+".compact_orig");
+                        if(!currFile.renameTo(currFileRenamed)){
+                            //failed to rename file, perhaps still open
+                            //TODO recovery here. Perhaps copy data from one file to other, instead of renaming it
+                            throw new AssertionError("failed to rename file "+currFile);
+                        }
 
-                    //rename compacted file to current file
-                    if(!compactedFileF.renameTo(currFile)) {
-                        //TODO recovery here.
-                        throw new AssertionError("failed to rename file " + compactedFileF);
-                    }
+                        //rename compacted file to current file
+                        if(!compactedFileF.renameTo(currFile)) {
+                            //TODO recovery here.
+                            throw new AssertionError("failed to rename file " + compactedFileF);
+                        }
 
-                    //and reopen volume
-                    this.headVol = this.vol = volumeFactory.run(this.fileName);
+                        //and reopen volume
+                        this.headVol = this.vol = volumeFactory.run(this.fileName);
 
-                    if(isStoreCached){
-                        structuralLock.lock();
-                        try {
+                        if(isStoreCached){
                             ((StoreCached)this).dirtyStackPages.clear();
-                        }finally {
-                            structuralLock.unlock();
                         }
 
                     }
-
+                }finally {
+                    structuralLock.unlock();
                 }
             }finally{
                 commitLock.unlock();

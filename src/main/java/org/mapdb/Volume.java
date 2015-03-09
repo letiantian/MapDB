@@ -93,7 +93,12 @@ public abstract class Volume implements Closeable{
 
     public abstract boolean isEmpty();
 
-    public abstract void deleteFile();
+    public void deleteFile(){
+        File f = getFile();
+        if(f!=null && !f.delete()){
+            LOG.warning("Could not delete file: "+f);
+        }
+    }
 
     public abstract boolean isSliced();
 
@@ -664,11 +669,6 @@ public abstract class Volume implements Closeable{
 
 
         @Override
-        public void deleteFile() {
-            file.delete();
-        }
-
-        @Override
         public long length() {
             return file.length();
         }
@@ -795,8 +795,6 @@ public abstract class Volume implements Closeable{
         }
 
         @Override public void sync() {}
-
-        @Override public void deleteFile() {}
 
         @Override
         public long length() {
@@ -1125,10 +1123,6 @@ public abstract class Volume implements Closeable{
             }
         }
 
-        @Override
-        public void deleteFile() {
-            file.delete();
-        }
 
         @Override
         public int sliceSize() {
@@ -1426,10 +1420,6 @@ public abstract class Volume implements Closeable{
             return slices.length==0;
         }
 
-        @Override
-        public void deleteFile() {
-
-        }
 
         @Override
         public int sliceSize() {
@@ -1583,10 +1573,6 @@ public abstract class Volume implements Closeable{
             return true;
         }
 
-        @Override
-        public void deleteFile() {
-
-        }
 
         @Override
         public int sliceSize() {
@@ -1956,10 +1942,6 @@ public abstract class Volume implements Closeable{
             }
         }
 
-        @Override
-        public void deleteFile() {
-            file.delete();
-        }
 
         @Override
         public boolean isSliced() {
@@ -2341,9 +2323,6 @@ public abstract class Volume implements Closeable{
             return addresses.length==0;
         }
 
-        @Override
-        public void deleteFile() {
-        }
 
         @Override
         public boolean isSliced() {

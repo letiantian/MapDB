@@ -1,4 +1,5 @@
 /*
+/*
  *  Copyright (c) 2012 Jan Kotek
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
@@ -244,7 +245,7 @@ public class StoreWAL extends StoreCached {
         curVol.putInt(walOffset2,val);
 
         return true;
-        }
+    }
 
     protected long walGetLong(long offset, int segment){
         if(CC.PARANOID && offset%8!=0)
@@ -563,7 +564,7 @@ public class StoreWAL extends StoreCached {
         commitLock.lock();
         try{
             //if big enough, do full WAL replay
-            if(volumes.size()>FULL_REPLAY_AFTER_N_TX) {
+            if(volumes.size()>FULL_REPLAY_AFTER_N_TX && !compactionInProgress) {
                 commitFullWALReplay();
                 return;
             }
@@ -661,9 +662,6 @@ public class StoreWAL extends StoreCached {
         if(CC.PARANOID && !commitLock.isHeldByCurrentThread())
             throw new AssertionError();
 
-        if(CC.PARANOID && !compactLock.isHeldByCurrentThread())
-            throw new AssertionError();
-
         //lock all segment locks
         //TODO use series of try..finally statements, perhaps recursion with runnable
 
@@ -704,7 +702,7 @@ public class StoreWAL extends StoreCached {
                     for(int i=0;i<set.length;i++){
                         long offset = set[i];
                         if(offset==0)
-                            continue;;
+                            continue;
                         byte[] val = (byte[]) dirtyStackPages.values[i];
 
                         if (CC.PARANOID && offset < PAGE_SIZE)
@@ -744,6 +742,7 @@ public class StoreWAL extends StoreCached {
                 curVol.sync();
                 //put wal seal
                 curVol.putLong(8, WAL_SEAL);
+                curVol.sync();
 
                 //now replay full WAL
                 replayWAL();
@@ -764,8 +763,6 @@ public class StoreWAL extends StoreCached {
         if(CC.PARANOID && !structuralLock.isHeldByCurrentThread())
             throw new AssertionError();
         if(CC.PARANOID && !commitLock.isHeldByCurrentThread())
-            throw new AssertionError();
-        if(CC.PARANOID && !compactLock.isHeldByCurrentThread())
             throw new AssertionError();
 
 
@@ -833,6 +830,7 @@ public class StoreWAL extends StoreCached {
             wal.truncate(0);
             wal.close();
             wal.deleteFile();
+
         }
         fileNum = -1;
         curVol = null;
@@ -869,46 +867,46 @@ public class StoreWAL extends StoreCached {
             commitLock.lock();
             try{
 
-            if(closed) {
-                return;
-            }
-
-            if(hasUncommitedData()){
-                LOG.warning("Closing storage with uncommited data, those data will be discarted.");
-            }
-
-            closed = true;
-
-            //TODO do not replay if not dirty
-            if(!readonly) {
-                structuralLock.lock();
-                try {
-                    replayWAL();
-                } finally {
-                    structuralLock.unlock();
+                if(closed) {
+                    return;
                 }
-            }
 
-            for(Volume v:volumes){
-                v.close();
-            }
-            volumes.clear();
-
-            headVol = null;
-            headVolBackup = null;
-
-            curVol = null;
-            dirtyStackPages.clear();
-
-            if(caches!=null){
-                for(Cache c:caches){
-                    c.close();
+                if(hasUncommitedData()){
+                    LOG.warning("Closing storage with uncommited data, those data will be discarted.");
                 }
-                Arrays.fill(caches,null);
+
+                closed = true;
+
+                //TODO do not replay if not dirty
+                if(!readonly) {
+                    structuralLock.lock();
+                    try {
+                        replayWAL();
+                    } finally {
+                        structuralLock.unlock();
+                    }
+                }
+
+                for(Volume v:volumes){
+                    v.close();
+                }
+                volumes.clear();
+
+                headVol = null;
+                headVolBackup = null;
+
+                curVol = null;
+                dirtyStackPages.clear();
+
+                if(caches!=null){
+                    for(Cache c:caches){
+                        c.close();
+                    }
+                    Arrays.fill(caches,null);
+                }
+            }finally {
+                commitLock.unlock();
             }
-        }finally {
-            commitLock.unlock();
-        }
         }finally {
             compactLock.unlock();
         }
@@ -936,9 +934,10 @@ public class StoreWAL extends StoreCached {
                 //start zero WAL file with compaction flag
                 structuralLock.lock();
                 try {
-                    if(CC.PARANOID && fileNum!=-1)
+                    if(CC.PARANOID && fileNum!=0)
                         throw new AssertionError();
-                    walStartNextFile();
+                    //TODO upgrade WAL to record compaction format
+//                    walStartNextFile();
                     zeroWAL = volumes.get(0);
 
                     //TODO compact zero WAL header
@@ -955,8 +954,8 @@ public class StoreWAL extends StoreCached {
             //open target file
             final String targetFile =
                     zeroWAL.getFile()==null?
-                        null:
-                        zeroWAL.getFile()+".compact";
+                            null:
+                            zeroWAL.getFile()+".compact";
 
             final StoreDirect target = new StoreDirect(targetFile,
                     volumeFactory,
@@ -974,7 +973,8 @@ public class StoreWAL extends StoreCached {
             }
 
 
-            target.close();
+            //target sync
+            target.commit();
             //TODO zero WAL SEAL
             zeroWAL.sync();
 
@@ -988,50 +988,55 @@ public class StoreWAL extends StoreCached {
                 }
                 try{
 
-                    //update some stuff
-                    target.vol.putLong(MAX_RECID_OFFSET, parity3Set(maxRecid.get() * 8));
-                    this.indexPages = target.indexPages;
-                    this.lastAllocatedData = target.lastAllocatedData;
+                    structuralLock.lock();
+                    try{
 
+                        //update some stuff
+                        target.vol.putLong(MAX_RECID_OFFSET, parity3Set(maxRecid.get() * 8));
+                        this.indexPages = target.indexPages;
+                        this.lastAllocatedData = target.lastAllocatedData;
 
-                    //swap files
-                    if(targetFile==null) {
-                        //in memory vol without file, just swap everything
-                        Volume oldVol = this.vol;
-                        this.headVol = this.vol = target.vol;
-                        //TODO update variables
-                        oldVol.close();
-                    }else {
-                        File compactedFileF = new File(targetFile);
-                        //close everything
-                        target.vol.sync();
-                        target.close();
-                        this.vol.sync();
-                        this.vol.close();
-                        //rename current file
-                        File currFile = new File(this.fileName);
-                        File currFileRenamed = new File(currFile.getPath() + ".compact_orig");
-                        if (!currFile.renameTo(currFileRenamed)) {
-                            //failed to rename file, perhaps still open
-                            //TODO recovery here. Perhaps copy data from one file to other, instead of renaming it
-                            throw new AssertionError("failed to rename file " + currFile);
+                        //swap files
+                        if(targetFile==null) {
+                            //in memory vol without file, just swap everything
+                            Volume oldVol = this.vol;
+                            this.headVol = this.vol = target.vol;
+                            //TODO update variables
+                            oldVol.close();
+                        }else {
+                            File compactedFileF = new File(targetFile);
+                            target.close();
+                            this.vol.close();
+                            //rename current file
+                            File currFile = new File(this.fileName);
+                            File currFileRenamed = new File(currFile.getPath() + ".compact_orig");
+                            if (!currFile.renameTo(currFileRenamed)) {
+                                //failed to rename file, perhaps still open
+                                //TODO recovery here. Perhaps copy data from one file to other, instead of renaming it
+                                throw new AssertionError("failed to rename file " + currFile);
+                            }
+
+                            //rename compacted file to current file
+                            if (!compactedFileF.renameTo(currFile)) {
+                                //TODO recovery here.
+                                throw new AssertionError("failed to rename file " + compactedFileF);
+                            }
+
+                            //and reopen volume
+                            this.realVol = volumeFactory.run(this.fileName);
+                            this.vol = new Volume.ReadOnly(this.realVol);
+                            this.initHeadVol();
+
                         }
 
-                        //rename compacted file to current file
-                        if (!compactedFileF.renameTo(currFile)) {
-                            //TODO recovery here.
-                            throw new AssertionError("failed to rename file " + compactedFileF);
-                        }
-
-                        //and reopen volume
-                        this.headVol = this.vol = volumeFactory.run(this.fileName);
-
+                        //TODO swap done, discard WAL0 file
+                    }finally {
+                        structuralLock.unlock();
                     }
 
-                    //TODO swap done, discard WAL0 file
 
                 }finally {
-                    for (int i = locks.length; i >= 0; i--) {
+                    for (int i = locks.length-1; i >= 0; i--) {
                         locks[i].writeLock().unlock();
                     }
                 }
@@ -1059,8 +1064,8 @@ public class StoreWAL extends StoreCached {
             lock.lock();
             try{
                 if(currLongLongs[i].size()!=0 ||
-                   currDataLongs[i].size()!=0 ||
-                   writeCache[i].size!=0)
+                        currDataLongs[i].size()!=0 ||
+                        writeCache[i].size!=0)
                     return true;
             }finally {
                 lock.unlock();
