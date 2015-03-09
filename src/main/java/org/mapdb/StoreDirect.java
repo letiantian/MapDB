@@ -910,7 +910,7 @@ public class StoreDirect extends Store {
 
             //update maxRecid in thread safe way
             for(long oldMaxRecid=maxRecid.get();
-                maxRecid.compareAndSet(oldMaxRecid, Math.max(recid,oldMaxRecid));
+                !maxRecid.compareAndSet(oldMaxRecid, Math.max(recid,oldMaxRecid));
                 oldMaxRecid=maxRecid.get()){
             }
 
