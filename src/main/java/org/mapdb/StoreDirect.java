@@ -5,6 +5,7 @@ import java.io.File;
 import java.util.Arrays;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 
 import static org.mapdb.DataIO.*;
@@ -792,9 +793,9 @@ public class StoreDirect extends Store {
 
     @Override
     public void compact() {
-        final boolean isCached = this instanceof StoreCached;
+        final boolean isStoreCached = this instanceof StoreCached;
         for(int i=0;i<locks.length;i++){
-            Lock lock = isCached?locks[i].readLock():locks[i].writeLock();
+            Lock lock = isStoreCached?locks[i].readLock():locks[i].writeLock();
             lock.lock();
         }
 
@@ -816,82 +817,21 @@ public class StoreDirect extends Store {
                         executor==null?LOCKING_STRATEGY_NOLOCK:LOCKING_STRATEGY_WRITELOCK,
                         checksum,compress,null,false,0,false,0);
                 target.init();
-                long maxRecid = RECID_LAST_RESERVED;
+                final AtomicLong maxRecid = new AtomicLong(RECID_LAST_RESERVED);
 
                 //TODO what about recids which are already in freeRecidLongStack?
                 // I think it gets restored by traversing index table,
                 // so there is no need to traverse and copy freeRecidLongStack
+                // TODO same problem in StoreWAL
 
                 //iterate over index pages
                 indexPage:
                 for(int indexPageI=0;indexPageI<indexPages.length;indexPageI++){
-                    final long indexPage = indexPages[indexPageI];
-                    long recid = (indexPageI==0? 0 : indexPageI * PAGE_SIZE/8 - HEAD_END/8);
-                    final long indexPageStart = (indexPage==0?HEAD_END+8 : indexPage);
-                    final long indexPageEnd = indexPage+PAGE_SIZE_M16;
-
-                    //iterate over indexOffset values
-                    //TODO check if preloading and caching of all indexVals on this index page would improve performance
-                    indexVal:
-                    for( long indexOffset=indexPageStart;
-                            indexOffset<indexPageEnd;
-                            indexOffset+=8){
-                        recid++;
-
-                        if(recid*8>maxRecidOffset)
-                            break indexVal;
-
-                        maxRecid = Math.max(recid,maxRecid);
-
-                        final long indexVal = vol.getLong(indexOffset);
-
-
-                        //check if was discarted
-                        if((indexVal&MUNUSED)!=0||indexVal == 0){
-                            //mark rec id as free, so it can be reused
-                            target.structuralLock.lock();
-                            target.longStackPut(FREE_RECID_STACK, recid, false);
-                            target.structuralLock.unlock();
-                            continue indexVal;
-                        }
-
-
-                        //deal with linked record non zero record
-                        if((indexVal & MLINKED)!=0 && indexVal>>>48!=0){
-                            //load entire linked record into byte[]
-                            long[] offsets = offsetsGet(recid);
-                            int totalSize = offsetsTotalSize(offsets);
-                            byte[] b = getLoadLinkedRecord(offsets, totalSize);
-
-                            //now put into new store, ecquire locks
-                            target.locks[lockPos(recid)].writeLock().lock();
-                            target.structuralLock.lock();
-                            //allocate space
-                            long[] newOffsets = target.freeDataTake(totalSize);
-
-                            target.pageIndexEnsurePageForRecidAllocated(recid);
-                            target.putData(recid,newOffsets,b, totalSize);
-
-                            target.structuralLock.unlock();
-                            target.locks[lockPos(recid)].writeLock().unlock();
-
-
-                            continue indexVal;
-                        }
-
-                        target.locks[lockPos(recid)].writeLock().lock();
-                        target.structuralLock.lock();
-                        target.pageIndexEnsurePageForRecidAllocated(recid);
-                        //TODO preserver archive flag
-                        target.updateFromCompact(recid, indexVal, vol);
-                        target.structuralLock.unlock();
-                        target.locks[lockPos(recid)].writeLock().unlock();
-
-                    }
+                    compactIndexPage(maxRecidOffset, target, maxRecid, indexPageI);
                 }
 
                 //update some stuff
-                target.vol.putLong(MAX_RECID_OFFSET, parity3Set(maxRecid * 8));
+                target.vol.putLong(MAX_RECID_OFFSET, parity3Set(maxRecid.get() * 8));
                 this.indexPages = target.indexPages;
                 this.lastAllocatedData = target.lastAllocatedData;
 
@@ -928,7 +868,7 @@ public class StoreDirect extends Store {
                     //and reopen volume
                     this.headVol = this.vol = volumeFactory.run(this.fileName);
 
-                    if(isCached){
+                    if(isStoreCached){
                         structuralLock.lock();
                         try {
                             ((StoreCached)this).dirtyStackPages.clear();
@@ -944,9 +884,79 @@ public class StoreDirect extends Store {
             }
         }finally {
             for(int i=locks.length-1;i>=0;i--) {
-                Lock lock = isCached ? locks[i].readLock() : locks[i].writeLock();
+                Lock lock = isStoreCached ? locks[i].readLock() : locks[i].writeLock();
                 lock.unlock();
             }
+        }
+    }
+
+    protected void compactIndexPage(long maxRecidOffset, StoreDirect target, AtomicLong maxRecid, int indexPageI) {
+        final long indexPage = indexPages[indexPageI];
+        long recid = (indexPageI==0? 0 : indexPageI * PAGE_SIZE/8 - HEAD_END/8);
+        final long indexPageStart = (indexPage==0?HEAD_END+8 : indexPage);
+        final long indexPageEnd = indexPage+PAGE_SIZE_M16;
+
+        //iterate over indexOffset values
+        //TODO check if preloading and caching of all indexVals on this index page would improve performance
+        indexVal:
+        for( long indexOffset=indexPageStart;
+                indexOffset<indexPageEnd;
+                indexOffset+=8){
+            recid++;
+
+            if(recid*8>maxRecidOffset)
+                break indexVal;
+
+            //update maxRecid in thread safe way
+            for(long oldMaxRecid=maxRecid.get();
+                maxRecid.compareAndSet(oldMaxRecid, Math.max(recid,oldMaxRecid));
+                oldMaxRecid=maxRecid.get()){
+            }
+
+            final long indexVal = vol.getLong(indexOffset);
+
+
+            //check if was discarted
+            if((indexVal&MUNUSED)!=0||indexVal == 0){
+                //mark rec id as free, so it can be reused
+                target.structuralLock.lock();
+                target.longStackPut(FREE_RECID_STACK, recid, false);
+                target.structuralLock.unlock();
+                continue indexVal;
+            }
+
+
+            //deal with linked record non zero record
+            if((indexVal & MLINKED)!=0 && indexVal>>>48!=0){
+                //load entire linked record into byte[]
+                long[] offsets = offsetsGet(recid);
+                int totalSize = offsetsTotalSize(offsets);
+                byte[] b = getLoadLinkedRecord(offsets, totalSize);
+
+                //now put into new store, ecquire locks
+                target.locks[lockPos(recid)].writeLock().lock();
+                target.structuralLock.lock();
+                //allocate space
+                long[] newOffsets = target.freeDataTake(totalSize);
+
+                target.pageIndexEnsurePageForRecidAllocated(recid);
+                target.putData(recid,newOffsets,b, totalSize);
+
+                target.structuralLock.unlock();
+                target.locks[lockPos(recid)].writeLock().unlock();
+
+
+                continue indexVal;
+            }
+
+            target.locks[lockPos(recid)].writeLock().lock();
+            target.structuralLock.lock();
+            target.pageIndexEnsurePageForRecidAllocated(recid);
+            //TODO preserver archive flag
+            target.updateFromCompact(recid, indexVal, vol);
+            target.structuralLock.unlock();
+            target.locks[lockPos(recid)].writeLock().unlock();
+
         }
     }
 

@@ -26,10 +26,9 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
-import static org.mapdb.DataIO.parity16Get;
-import static org.mapdb.DataIO.parity16Set;
-import static org.mapdb.DataIO.parity4Get;
+import static org.mapdb.DataIO.*;
 
 /**
  * Write-Ahead-Log
@@ -40,6 +39,7 @@ public class StoreWAL extends StoreCached {
     public static final String TRANS_LOG_FILE_EXT = ".t";
 
     protected static final long WAL_SEAL = 8234892392398238983L;
+
     protected static final int WAL_CHECKSUM_MASK = 0x1F; //5 bits
 
     protected static final int FULL_REPLAY_AFTER_N_TX = 16;
@@ -52,6 +52,10 @@ public class StoreWAL extends StoreCached {
 
     protected final LongLongMap pageLongStack = new LongLongMap();
     protected final List<Volume> volumes = new CopyOnWriteArrayList<Volume>();
+
+    protected final ReentrantLock compactLock = new ReentrantLock(CC.FAIR_LOCKS);
+    /** protected by commitLock */
+    protected volatile boolean compactionInProgress = false;
 
     protected Volume curVol;
 
@@ -644,6 +648,9 @@ public class StoreWAL extends StoreCached {
         if(CC.PARANOID && !commitLock.isHeldByCurrentThread())
             throw new AssertionError();
 
+        if(CC.PARANOID && !compactLock.isHeldByCurrentThread())
+            throw new AssertionError();
+
         //lock all segment locks
         //TODO use series of try..finally statements, perhaps recursion with runnable
 
@@ -745,6 +752,9 @@ public class StoreWAL extends StoreCached {
             throw new AssertionError();
         if(CC.PARANOID && !commitLock.isHeldByCurrentThread())
             throw new AssertionError();
+        if(CC.PARANOID && !compactLock.isHeldByCurrentThread())
+            throw new AssertionError();
+
 
         file:for(Volume wal:volumes){
             if(wal.isEmpty()) {
@@ -841,8 +851,11 @@ public class StoreWAL extends StoreCached {
 
     @Override
     public void close() {
-        commitLock.lock();
+        compactLock.lock();
         try{
+            commitLock.lock();
+            try{
+
             if(closed)
                 return;
 
@@ -878,5 +891,115 @@ public class StoreWAL extends StoreCached {
         }finally {
             commitLock.unlock();
         }
+        }finally {
+            compactLock.unlock();
+        }
+    }
+
+    @Override
+    public void compact() {
+        compactLock.lock();
+        try{
+            Volume zeroWAL;
+            commitLock.lock();
+            try{
+                //check if there are uncommited data, and log warning if yes
+                if(hasUncommitedData()){
+                    //TODO how to deal with uncommited data? Is there way not to commit? Perhaps upgrade to recordWAL?
+                    LOG.warning("Compaction started with uncommited data. Calling commit automatically.");
+                }
+
+                //cleanup everything
+                commitFullWALReplay();
+                //start compaction
+                compactionInProgress = true;
+
+
+                //start zero WAL file with compaction flag
+                structuralLock.lock();
+                try {
+                    if(CC.PARANOID && fileNum!=-1)
+                        throw new AssertionError();
+                    walStartNextFile();
+                    zeroWAL = volumes.get(0);
+
+                    //TODO compact zero WAL header
+
+                }finally {
+                    structuralLock.unlock();
+                }
+            }finally {
+                commitLock.unlock();
+            }
+
+            long maxRecidOffset = parity3Get(headVol.getLong(MAX_RECID_OFFSET));
+
+            //open target file
+            final String targetFile =
+                    zeroWAL.getFile()==null?
+                        null:
+                        zeroWAL.getFile()+".compact";
+
+            final StoreDirect target = new StoreDirect(targetFile,
+                    volumeFactory,
+                    null,lockScale,
+                    executor==null?LOCKING_STRATEGY_NOLOCK:LOCKING_STRATEGY_WRITELOCK,
+                    checksum,compress,null,false,0,false,0);
+            target.init();
+
+            final AtomicLong maxRecid = new AtomicLong(RECID_LAST_RESERVED);
+
+            //iterate over index pages
+            indexPage:
+            for(int indexPageI=0;indexPageI<indexPages.length;indexPageI++){
+                compactIndexPage(maxRecidOffset, target, maxRecid, indexPageI);
+            }
+
+
+            target.close();
+            //TODO zero WAL SEAL
+            zeroWAL.sync();
+
+            commitLock.lock();
+            try{
+
+
+                //swap files
+
+//                //update some stuff
+//                target.vol.putLong(MAX_RECID_OFFSET, parity3Set(maxRecid.get() * 8));
+//                this.indexPages = target.indexPages;
+//                this.lastAllocatedData = target.lastAllocatedData;
+
+
+
+                //replay record wals
+
+
+                compactionInProgress = false; //TODO in finally clause? but still under commitLock
+            }finally {
+                commitLock.unlock();
+            }
+
+        }finally {
+            compactLock.unlock();
+        }
+    }
+
+    /** return true if there are uncommited data in current transaction, otherwise false*/
+    protected boolean hasUncommitedData() {
+        for(int i=0;i<locks.length;i++){
+            final Lock lock  = locks[i].readLock();
+            lock.lock();
+            try{
+                if(currLongLongs[i].size()!=0 ||
+                   currDataLongs[i].size()!=0 ||
+                   writeCache[i].size!=0)
+                    return true;
+            }finally {
+                lock.unlock();
+            }
+        }
+        return false;
     }
 }
