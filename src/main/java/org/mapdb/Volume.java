@@ -508,7 +508,7 @@ public abstract class Volume implements Closeable{
 
         @Override
         public boolean isEmpty() {
-            return slices.length==0;
+            return slices==null || slices.length==0;
         }
 
         @Override

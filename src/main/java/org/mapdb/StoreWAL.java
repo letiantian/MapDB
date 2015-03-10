@@ -37,8 +37,6 @@ import static org.mapdb.DataIO.*;
 public class StoreWAL extends StoreCached {
 
 
-    public static final String TRANS_LOG_FILE_EXT = ".t";
-
     protected static final long WAL_SEAL = 8234892392398238983L;
 
     protected static final int WAL_CHECKSUM_MASK = 0x1F; //5 bits
@@ -53,6 +51,9 @@ public class StoreWAL extends StoreCached {
 
     protected final LongLongMap pageLongStack = new LongLongMap();
     protected final List<Volume> volumes = new CopyOnWriteArrayList<Volume>();
+    protected volatile Volume walC;
+    protected volatile Volume walCCompact;
+    protected final List<Volume> walRec = new CopyOnWriteArrayList<Volume>();
 
     protected final ReentrantLock compactLock = new ReentrantLock(CC.FAIR_LOCKS);
     /** protected by commitLock */
@@ -135,11 +136,11 @@ public class StoreWAL extends StoreCached {
         realVol = vol;
 
         //replay WAL files
-        String wal0Name = getWalFileName(0);
+        String wal0Name = getWalFileName("0");
         if(wal0Name!=null && new File(wal0Name).exists()){
             //fill wal files
             for(int i=0;;i++){
-                String wname = getWalFileName(i);
+                String wname = getWalFileName(""+i);
                 if(!new File(wname).exists())
                     break;
                 volumes.add(volumeFactory.run(wname));
@@ -181,7 +182,7 @@ public class StoreWAL extends StoreCached {
         fileNum++;
         if (CC.PARANOID && fileNum != volumes.size())
             throw new AssertionError();
-        String filewal = getWalFileName(fileNum);
+        String filewal = getWalFileName(""+fileNum);
         Volume nextVol;
         if (readonly && filewal != null && !new File(filewal).exists()){
             nextVol = new Volume.ReadOnly(new Volume.ByteArrayVol(8));
@@ -196,9 +197,9 @@ public class StoreWAL extends StoreCached {
         curVol = nextVol;
     }
 
-    protected String getWalFileName(int fileNum) {
+    protected String getWalFileName(String ext) {
         return fileName==null? null :
-                fileName+"."+fileNum+".wal";
+                fileName+".wal"+"."+ext;
     }
 
     protected void walPutLong(long offset, long value){
@@ -649,7 +650,9 @@ public class StoreWAL extends StoreCached {
                 //put wal seal
                 curVol.putLong(8, WAL_SEAL);
 
+
                 walStartNextFile();
+
             } finally {
                 structuralLock.unlock();
             }
@@ -760,6 +763,88 @@ public class StoreWAL extends StoreCached {
 
 
     protected void replayWAL(){
+
+        //check if compaction files are present and walid
+        final boolean compaction = walC!=null && !walC.isEmpty() &&
+                walCCompact!=null && !walCCompact.isEmpty();
+
+
+        if(compaction){
+            //check compaction file was finished well
+            walC.ensureAvailable(16);
+            boolean walCSeal = walC.getLong(8) == WAL_SEAL;
+
+            //TODO if walCSeal check indexChecksum on walCCompact volume
+
+            if(!walCSeal){
+                LOG.warning("Compaction failed, seal not present. Removing incomplete compacted file, keeping old fragmented file.");
+                walC.close();
+                walC.deleteFile();
+                walC = null;
+                walCCompact.close();
+                walCCompact.deleteFile();
+                walCCompact = null;
+            }else{
+
+                //compaction is valid, so swap compacted file with current
+                if(vol.getFile()==null){
+                    //no file present, so we are in-memory, just swap volumes
+                    //in memory vol without file, just swap everything
+                    Volume oldVol = this.vol;
+                    this.realVol = walCCompact;
+                    this.vol = new Volume.ReadOnly(realVol);
+                    initHeadVol();
+                    //TODO update variables
+                    oldVol.close();
+                }else{
+                    //file is not null, we are working on file system, so swap files
+                    File walCCompactFile = walCCompact.getFile();
+                    File thisFile = new File(fileName);
+                    File thisFileBackup = new File(fileName+".wal.c.orig");
+
+                    this.vol.close();
+                    if(!thisFile.renameTo(thisFileBackup)){
+                        //TODO recovery here. Perhaps copy data from one file to other, instead of renaming it
+                        throw new AssertionError("failed to rename file " + thisFile);
+                    }
+
+                    //rename compacted file to current file
+                    if (!walCCompactFile.renameTo(thisFile)) {
+                        //TODO recovery here.
+                        throw new AssertionError("failed to rename file " + walCCompactFile);
+                    }
+
+                    //and reopen volume
+                    this.realVol = volumeFactory.run(this.fileName);
+                    this.vol = new Volume.ReadOnly(this.realVol);
+                    this.initHeadVol();
+
+                    //delete orig file
+                    if(!thisFileBackup.delete()){
+                        LOG.warning("Could not delete original compacted file: "+thisFileBackup);
+                    }
+
+                    walCCompact.sync();
+                    walCCompact.close();
+
+                    walC.close();
+                    walC.deleteFile();
+                    walC = null;
+                }
+
+                super.initOpen();
+                indexPagesBackup = indexPages.clone();
+
+                //make main vol readonly, to make sure it is never overwritten outside WAL replay
+                //all data are written to realVol
+                vol = new Volume.ReadOnly(vol);
+            }
+        }
+
+        replayWALInstructionFiles();
+    }
+
+    private void replayWALInstructionFiles() {
         if(CC.PARANOID && !structuralLock.isHeldByCurrentThread())
             throw new AssertionError();
         if(CC.PARANOID && !commitLock.isHeldByCurrentThread())
@@ -915,8 +1000,8 @@ public class StoreWAL extends StoreCached {
     @Override
     public void compact() {
         compactLock.lock();
+
         try{
-            Volume zeroWAL;
             commitLock.lock();
             try{
                 //check if there are uncommited data, and log warning if yes
@@ -936,11 +1021,15 @@ public class StoreWAL extends StoreCached {
                 try {
                     if(CC.PARANOID && fileNum!=0)
                         throw new AssertionError();
-                    //TODO upgrade WAL to record compaction format
-//                    walStartNextFile();
-                    zeroWAL = volumes.get(0);
+                    if(CC.PARANOID && walC!=null)
+                        throw new AssertionError();
 
-                    //TODO compact zero WAL header
+                    //start walC file, which indicates if compaction finished fine
+                    String walCFileName = getWalFileName("c");
+                    walC = volumeFactory.run(walCFileName);
+                    walC.ensureAvailable(16);
+                    walC.putLong(0,0); //TODO wal header
+                    walC.putLong(8,0);
 
                 }finally {
                     structuralLock.unlock();
@@ -952,10 +1041,7 @@ public class StoreWAL extends StoreCached {
             long maxRecidOffset = parity3Get(headVol.getLong(MAX_RECID_OFFSET));
 
             //open target file
-            final String targetFile =
-                    zeroWAL.getFile()==null?
-                            null:
-                            zeroWAL.getFile()+".compact";
+            final String targetFile = getWalFileName("c.compact");
 
             final StoreDirect target = new StoreDirect(targetFile,
                     volumeFactory,
@@ -963,6 +1049,7 @@ public class StoreWAL extends StoreCached {
                     executor==null?LOCKING_STRATEGY_NOLOCK:LOCKING_STRATEGY_WRITELOCK,
                     checksum,compress,null,false,0,false,0);
             target.init();
+            walCCompact = target.vol;
 
             final AtomicLong maxRecid = new AtomicLong(RECID_LAST_RESERVED);
 
@@ -972,79 +1059,25 @@ public class StoreWAL extends StoreCached {
                 compactIndexPage(maxRecidOffset, target, maxRecid, indexPageI);
             }
 
+            target.vol.putLong(MAX_RECID_OFFSET, parity3Set(maxRecid.get() * 8));
 
-            //target sync
-            target.commit();
-            //TODO zero WAL SEAL
-            zeroWAL.sync();
+            //compaction finished fine, so now flush target file, and seal log file. This makes compaction durable
+            target.commit(); //sync all files, that is durable since there are no background tasks
+
+            walC.putLong(8, WAL_SEAL);
+            walC.sync();
+
 
             commitLock.lock();
             try{
-                //swap index files
 
-                //lock everything, so no IO is running while volume is being swapped
-                for(int i=0;i<locks.length;i++){
-                    locks[i].writeLock().lock();
-                }
-                try{
+                if(hasUncommitedData()){
+                    LOG.warning("Uncommited data at end of compaction, autocommit");
 
-                    structuralLock.lock();
-                    try{
-
-                        //update some stuff
-                        target.vol.putLong(MAX_RECID_OFFSET, parity3Set(maxRecid.get() * 8));
-                        this.indexPages = target.indexPages;
-                        this.lastAllocatedData = target.lastAllocatedData;
-
-                        //swap files
-                        if(targetFile==null) {
-                            //in memory vol without file, just swap everything
-                            Volume oldVol = this.vol;
-                            this.headVol = this.vol = target.vol;
-                            //TODO update variables
-                            oldVol.close();
-                        }else {
-                            File compactedFileF = new File(targetFile);
-                            target.close();
-                            this.vol.close();
-                            //rename current file
-                            File currFile = new File(this.fileName);
-                            File currFileRenamed = new File(currFile.getPath() + ".compact_orig");
-                            if (!currFile.renameTo(currFileRenamed)) {
-                                //failed to rename file, perhaps still open
-                                //TODO recovery here. Perhaps copy data from one file to other, instead of renaming it
-                                throw new AssertionError("failed to rename file " + currFile);
-                            }
-
-                            //rename compacted file to current file
-                            if (!compactedFileF.renameTo(currFile)) {
-                                //TODO recovery here.
-                                throw new AssertionError("failed to rename file " + compactedFileF);
-                            }
-
-                            //and reopen volume
-                            this.realVol = volumeFactory.run(this.fileName);
-                            this.vol = new Volume.ReadOnly(this.realVol);
-                            this.initHeadVol();
-
-                        }
-
-                        //TODO swap done, discard WAL0 file
-                    }finally {
-                        structuralLock.unlock();
-                    }
-
-
-                }finally {
-                    for (int i = locks.length-1; i >= 0; i--) {
-                        locks[i].writeLock().unlock();
-                    }
                 }
 
-
-                //TODO convert record WAL into regular WALS
-
-                //TODO full replay
+                //TODO there should be full WAL replay, but without commit
+                commitFullWALReplay();
 
                 compactionInProgress = false;
             }finally {

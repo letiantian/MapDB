@@ -26,9 +26,9 @@ public class StoreWALTest<E extends StoreWAL> extends StoreCachedTest<E>{
 
     @Test
     public void WAL_created(){
-        File wal0 = new File(f.getPath()+".0.wal");
-        File wal1 = new File(f.getPath()+".1.wal");
-        File wal2 = new File(f.getPath()+".2.wal");
+        File wal0 = new File(f.getPath()+".wal.0");
+        File wal1 = new File(f.getPath()+".wal.1");
+        File wal2 = new File(f.getPath()+".wal.2");
 
         StoreWAL w = openEngine();
 

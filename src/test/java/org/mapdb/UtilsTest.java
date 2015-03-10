@@ -111,7 +111,6 @@ public class UtilsTest {
         try{
             File index = File.createTempFile("mapdb","db");
             index.deleteOnExit();
-            new File(index.getPath()+ StoreWAL.TRANS_LOG_FILE_EXT).deleteOnExit();
 
             return index;
         }catch(IOException e){
