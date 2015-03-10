@@ -38,8 +38,9 @@ public class StoreDirect extends Store {
     protected static final long STORE_SIZE = 8*2;
     /** offset of maximal allocated recid. It is <<3 parity1*/
     protected static final long MAX_RECID_OFFSET = 8*3;
-    protected static final long INDEX_PAGE = 8*4;
-    protected static final long FREE_RECID_STACK = 8*5;
+    protected static final long LAST_PHYS_ALLOCATED_DATA_OFFSET = 8*4; //TODO update doc
+    protected static final long INDEX_PAGE = 8*5;
+    protected static final long FREE_RECID_STACK = 8*6;
 
 
     protected static final int MAX_REC_SIZE = 0xFFFF;
@@ -144,6 +145,7 @@ public class StoreDirect extends Store {
             indexPage = parity16Get(vol.getLong(indexPage+PAGE_SIZE_M16));
         }
         indexPages = Arrays.copyOf(ip,i);
+        lastAllocatedData = parity3Get(vol.getLong(LAST_PHYS_ALLOCATED_DATA_OFFSET));
     }
 
     protected void initCreate() {
@@ -165,6 +167,9 @@ public class StoreDirect extends Store {
         vol.putLong(MAX_RECID_OFFSET, parity3Set(RECID_LAST_RESERVED * 8));
         vol.putLong(INDEX_PAGE, parity16Set(0));
 
+        lastAllocatedData = 0L;
+        vol.putLong(LAST_PHYS_ALLOCATED_DATA_OFFSET,parity3Set(lastAllocatedData));
+
         //put reserved recids
         for(long recid=1;recid<RECID_FIRST;recid++){
             vol.putLong(recidToOffset(recid),parity1Set(MLINKED | MARCHIVE));
@@ -179,7 +184,6 @@ public class StoreDirect extends Store {
         vol.putInt(HEAD_CHECKSUM, headChecksum(vol));
         vol.sync();
         initHeadVol();
-        lastAllocatedData = 0L;
     }
 
 
@@ -758,6 +762,7 @@ public class StoreDirect extends Store {
             return;
         structuralLock.lock();
         try{
+            headVol.putLong(LAST_PHYS_ALLOCATED_DATA_OFFSET, parity3Set(lastAllocatedData));
             //and set header checksum
             vol.putInt(HEAD_CHECKSUM, headChecksum(vol));
         }finally {
