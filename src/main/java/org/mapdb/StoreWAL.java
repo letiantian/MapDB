@@ -796,6 +796,8 @@ public class StoreWAL extends StoreCached {
                     initHeadVol();
                     //TODO update variables
                     oldVol.close();
+                    walC.close();
+                    walC = null;
                 }else{
                     //file is not null, we are working on file system, so swap files
                     File walCCompactFile = walCCompact.getFile();
