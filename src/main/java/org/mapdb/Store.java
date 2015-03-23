@@ -159,6 +159,7 @@ public abstract class Store implements Engine {
         }
     }
 
+    //TODO DataOutputByteArray is not thread safe, make one recycled per segment lock
     protected final AtomicReference<DataIO.DataOutputByteArray> recycledDataOut =
             new AtomicReference<DataIO.DataOutputByteArray>();
 

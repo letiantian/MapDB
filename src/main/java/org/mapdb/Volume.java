@@ -217,14 +217,16 @@ public abstract class Volume implements Closeable{
      * @param targetOffset position in target volume where data will be copied into
      * @param size size of data to copy
      */
-    public void transferInto(long inputOffset, Volume target, long targetOffset, int size) {
-        byte[] data = new byte[size];
+    public void transferInto(long inputOffset, Volume target, long targetOffset, long size) {
+        //TODO size>Integer.MAX_VALUE
+
+        byte[] data = new byte[(int) size];
         try {
-            getDataInput(inputOffset, size).readFully(data);
+            getDataInput(inputOffset, (int) size).readFully(data);
         }catch(IOException e){
             throw new DBException.VolumeIOError(e);
         }
-        target.putData(targetOffset,data,0,size);
+        target.putData(targetOffset,data,0, (int) size);
     }
 
 
@@ -290,6 +292,25 @@ public abstract class Volume implements Closeable{
         };
     }
 
+    /**
+     * Copy content of one volume to another.
+     * Target volume might grow, but is never shrank.
+     * Target is also not synced
+     */
+    public static void copy(Volume from, Volume to) {
+        final long volSize = from.length();
+        final long bufSize = 1L<<CC.VOLUME_PAGE_SHIFT;
+
+        to.ensureAvailable(volSize);
+
+        for(long offset=0;offset<volSize;offset+=bufSize){
+            long size = Math.min(volSize,offset+bufSize)-offset;
+            if(CC.PARANOID && (size<0))
+                throw new AssertionError();
+            from.transferInto(offset,to,offset, size);
+        }
+
+    }
 
 
     /**
@@ -402,12 +423,13 @@ public abstract class Volume implements Closeable{
         }
 
         @Override
-        public void transferInto(long inputOffset, Volume target, long targetOffset, int size) {
+        public void transferInto(long inputOffset, Volume target, long targetOffset, long size) {
             final ByteBuffer b1 = slices[(int)(inputOffset >>> sliceShift)].duplicate();
             final int bufPos = (int) (inputOffset& sliceSizeModMask);
 
             b1.position(bufPos);
-            b1.limit(bufPos+size);
+            //TODO size>Integer.MAX_VALUE
+            b1.limit((int) (bufPos+size));
             target.putData(targetOffset,b1);
         }
 
@@ -600,6 +622,7 @@ public abstract class Volume implements Closeable{
             }
         }
 
+
         @Override
         public void close() {
             growLock.lock();
@@ -667,6 +690,10 @@ public abstract class Volume implements Closeable{
             }
         }
 
+        @Override
+        public boolean isEmpty() {
+            return length()<=0;
+        }
 
         @Override
         public long length() {
@@ -845,6 +872,10 @@ public abstract class Volume implements Closeable{
             } catch (IOException e) {
                 throw new DBException.VolumeIOError(e);
             }
+        }
+
+        public FileChannelVol(File file) {
+            this(file, false,CC.VOLUME_PAGE_SHIFT, 0);
         }
 
         protected static void checkFolder(File file, boolean readOnly) throws IOException {
@@ -1292,11 +1323,12 @@ public abstract class Volume implements Closeable{
 
 
         @Override
-        public void transferInto(long inputOffset, Volume target, long targetOffset, int size) {
+        public void transferInto(long inputOffset, Volume target, long targetOffset, long size) {
             int pos = (int) (inputOffset & sliceSizeModMask);
             byte[] buf = slices[((int) (inputOffset >>> sliceShift))];
 
-            target.putData(targetOffset,buf,pos, size);
+            //TODO size>Integer.MAX_VALUE
+            target.putData(targetOffset,buf,pos, (int) size);
         }
 
 
@@ -1505,8 +1537,9 @@ public abstract class Volume implements Closeable{
 
 
         @Override
-        public void transferInto(long inputOffset, Volume target, long targetOffset, int size) {
-            target.putData(targetOffset,data, (int) inputOffset, size);
+        public void transferInto(long inputOffset, Volume target, long targetOffset, long size) {
+            //TODO size>Integer.MAX_VALUE
+            target.putData(targetOffset,data, (int) inputOffset, (int) size);
         }
 
         @Override
@@ -1762,7 +1795,7 @@ public abstract class Volume implements Closeable{
         }
 
         @Override
-        public void transferInto(long inputOffset, Volume target, long targetOffset, int size) {
+        public void transferInto(long inputOffset, Volume target, long targetOffset, long size) {
             vol.transferInto(inputOffset, target, targetOffset, size);
         }
 

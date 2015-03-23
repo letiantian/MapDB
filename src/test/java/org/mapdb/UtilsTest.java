@@ -126,7 +126,7 @@ public class UtilsTest {
         int seed = (int) (100000*Math.random());
         for(int i=0;i<size;i++){
             b.append(chars[Math.abs(seed)%chars.length]);
-            seed = DataIO.intHash(seed);
+            seed = 31*seed+DataIO.intHash(seed);
 
         }
         return b.toString();
@@ -138,7 +138,7 @@ public class UtilsTest {
         byte[] ret = new byte[size];
         for(int i=0;i<ret.length;i++){
             ret[i] = (byte) seed;
-            seed = DataIO.intHash(seed);
+            seed = 31*seed+DataIO.intHash(seed);
         }
         return ret;
     }
