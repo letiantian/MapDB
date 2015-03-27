@@ -202,6 +202,8 @@ public class StoreWALTest<E extends StoreWAL> extends StoreCachedTest<E>{
         };
         t.start();
 
+        Thread.sleep(1000);
+
         //we should be able to commit while compaction is running
         for(Long recid: m.keySet()){
             boolean revert = rollbacks && Math.random()<0.5;
@@ -216,6 +218,8 @@ public class StoreWALTest<E extends StoreWAL> extends StoreCachedTest<E>{
 
         if(pre)
             assertTrue(t.isAlive());
+
+        Thread.sleep(1000);
 
         w.$_TEST_HACK_COMPACT_PRE_COMMIT_WAIT = false;
         w.$_TEST_HACK_COMPACT_POST_COMMIT_WAIT = false;
