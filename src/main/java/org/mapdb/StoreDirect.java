@@ -1023,7 +1023,7 @@ public class StoreDirect extends Store {
             throw new AssertionError("size too large");
         if(CC.PARANOID && (offset&MOFFSET)!=offset)
             throw new AssertionError("offset too large");
-        offset = ((((long)size))<<48) |
+        offset = (((long)size)<<48) |
                 offset |
                 (linked?MLINKED:0L)|
                 (unused?MUNUSED:0L)|

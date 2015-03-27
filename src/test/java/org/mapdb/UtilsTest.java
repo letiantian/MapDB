@@ -1,9 +1,12 @@
 package org.mapdb;
 
+import com.sun.management.UnixOperatingSystemMXBean;
 import org.junit.Assert;
 import org.junit.Test;
 
 import java.io.*;
+import java.lang.management.ManagementFactory;
+import java.lang.management.OperatingSystemMXBean;
 import java.nio.ByteBuffer;
 import java.util.Random;
 
@@ -145,5 +148,21 @@ public class UtilsTest {
 
     public static int randomInt() {
         return new Random().nextInt();
+    }
+
+    public static long fileHandles(){
+        OperatingSystemMXBean os = ManagementFactory.getOperatingSystemMXBean();
+        if(os instanceof UnixOperatingSystemMXBean){
+            return ((UnixOperatingSystemMXBean) os)
+                    //TODO log warning if needed
+            .getOpenFileDescriptorCount();
+
+            //TODO max file descriptors in doc
+//                    /etc/security/limits.conf
+//                    * soft nofile 4096
+//                    * hard nofile 65535 <<<
+
+        }
+        return -1;
     }
 }

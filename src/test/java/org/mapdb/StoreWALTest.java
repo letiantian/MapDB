@@ -4,6 +4,7 @@ package org.mapdb;
 import org.junit.Test;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -160,6 +161,119 @@ public class StoreWALTest<E extends StoreWAL> extends StoreCachedTest<E>{
 
         for(Long recid2:m.keySet()){
             assertEquals(m.get(recid2), e.get(recid2,Serializer.STRING));
+        }
+    }
+
+    @Test(timeout = 100000)
+    public void compact_commit_works_during_compact() throws InterruptedException {
+        compact_tx_works(false,true);
+    }
+
+    @Test(timeout = 100000)
+    public void compact_commit_works_after_compact() throws InterruptedException {
+        compact_tx_works(false,false);
+    }
+
+    @Test(timeout = 100000)
+    public void compact_rollback_works_during_compact() throws InterruptedException {
+        compact_tx_works(true,true);
+    }
+
+    @Test(timeout = 100000)
+    public void compact_rollback_works_after_compact() throws InterruptedException {
+        compact_tx_works(true,false);
+    }
+
+    void compact_tx_works(final boolean rollbacks, final boolean pre) throws InterruptedException {
+        final StoreWAL w = openEngine();
+        Map<Long,String> m = fill(w);
+        w.commit();
+
+        if(pre)
+            w.$_TEST_HACK_COMPACT_PRE_COMMIT_WAIT = true;
+        else
+            w.$_TEST_HACK_COMPACT_POST_COMMIT_WAIT = true;
+
+        Thread t = new Thread(){
+            @Override
+            public void run() {
+                w.compact();
+            }
+        };
+        t.start();
+
+        //we should be able to commit while compaction is running
+        for(Long recid: m.keySet()){
+            boolean revert = rollbacks && Math.random()<0.5;
+            w.update(recid,"ZZZ",Serializer.STRING);
+            if(revert){
+                w.rollback();
+            }else {
+                w.commit();
+                m.put(recid, "ZZZ");
+            }
+        }
+
+        if(pre)
+            assertTrue(t.isAlive());
+
+        w.$_TEST_HACK_COMPACT_PRE_COMMIT_WAIT = false;
+        w.$_TEST_HACK_COMPACT_POST_COMMIT_WAIT = false;
+
+        t.join();
+
+        for(Long recid:m.keySet()){
+            assertEquals(m.get(recid),w.get(recid,Serializer.STRING));
+        }
+
+    }
+
+    @Test public void compact_record_file_used() throws IOException {
+        StoreWAL w = openEngine();
+        Map<Long,String> m = fill(w);
+        w.commit();
+        w.close();
+
+        //now create fake compaction file, that should be ignored since seal is broken
+        String csealFile = w.getWalFileName("c");
+        Volume cseal = new Volume.FileChannelVol(new File(csealFile));
+        cseal.ensureAvailable(16);
+        cseal.putLong(8,234238492376748923L);
+
+        //create record wal file
+        String r0 = w.getWalFileName("r0");
+        Volume r = new Volume.FileChannelVol(new File(r0));
+        r.ensureAvailable(100000);
+        r.putLong(8,StoreWAL.WAL_SEAL);
+
+        long offset = 16;
+        //modify all records in map via record wal
+        for(long recid:m.keySet()){
+            r.putUnsignedByte(offset++, 5 << 5);
+            r.putSixLong(offset, recid);
+            offset+=6;
+            String val = "aa"+recid;
+            m.put(recid, val);
+            DataIO.DataOutputByteArray b = new DataIO.DataOutputByteArray();
+            Serializer.STRING.serialize(b, val);
+            int size = b.pos;
+            r.putInt(offset,size);
+            offset+=4;
+            r.putData(offset,b.buf,0,size);
+            offset+=size;
+        }
+        r.putUnsignedByte(offset,0);
+        r.sync();
+        r.putLong(8,StoreWAL.WAL_SEAL);
+        r.sync();
+        r.close();
+
+        //reopen engine, record WAL should be replayed
+        w = openEngine();
+
+        //check content of log file replayed into main store
+        for(long recid:m.keySet()){
+            assertEquals(m.get(recid), w.get(recid,Serializer.STRING));
         }
     }
 
